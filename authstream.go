@@ -40,6 +40,14 @@ type ValidBearerTokenEvent struct{}
 // It deliberately contains no credential.
 type InvalidBearerTokenEvent struct{}
 
+// pendingLookup retains the credential presented upstream independently of
+// the Vault lookup key. Count supports repeated lookups for the same key
+// without introducing per-request correlation IDs.
+type pendingLookup struct {
+	presentedToken string
+	count          int
+}
+
 // Auth consumes upstream bearer events and Vault lookup responses, and
 // publishes Auth-owned validation outcomes. It never owns or closes the
 // EventChannel or the upstream/Vault streams.
@@ -52,7 +60,7 @@ type Auth struct {
 	once   sync.Once
 
 	mu      sync.Mutex
-	pending map[string]int
+	pending map[string]*pendingLookup
 	errors  chan error
 }
 
@@ -61,9 +69,10 @@ type Auth struct {
 // BearerTokenNotReceiveEvent streams first; Vault must be initialized on the
 // same channel first. Auth registers its two output streams.
 //
-// The presented bearer token is used as Vault's lookup Key. The shared
-// EventChannel isolates workflows; no per-request correlation ID is used.
-// Subscribe to Auth's output streams before publishing upstream bearer events.
+// The presented bearer token is used as Vault's lookup Key. Auth separately
+// retains the presented token as the expected value for comparison. The
+// shared EventChannel isolates workflows; no per-request correlation ID is
+// used. Subscribe to Auth's output streams before publishing upstream events.
 func New(ctx context.Context, channel *stream.EventChannel) (*Auth, error) {
 	if channel == nil {
 		return nil, ErrNilEventChannel
@@ -96,7 +105,7 @@ func New(ctx context.Context, channel *stream.EventChannel) (*Auth, error) {
 		validBearerTokenEvents:   validEvents,
 		invalidBearerTokenEvents: invalidEvents,
 		cancel:                   cancel,
-		pending:                  make(map[string]int),
+		pending:                  make(map[string]*pendingLookup),
 		errors:                   make(chan error, subscriberBuffer),
 	}
 
@@ -176,22 +185,20 @@ func (a *Auth) handleBearerTokens(
 			if !ok {
 				return
 			}
-			token := event.Data.Token
-			if strings.TrimSpace(token) == "" {
+			presentedToken := event.Data.Token
+			if strings.TrimSpace(presentedToken) == "" {
 				a.publishInvalid()
 				continue
 			}
 
-			a.mu.Lock()
-			a.pending[token]++
-			a.mu.Unlock()
+			a.addPending(presentedToken, presentedToken)
 
 			err := requests.Publish(stream.Event[vaultstream.VaultTokenRequestedEvent]{
 				Name: "vault.token.requested",
-				Data: vaultstream.VaultTokenRequestedEvent{Key: token},
+				Data: vaultstream.VaultTokenRequestedEvent{Key: presentedToken},
 			})
 			if err != nil {
-				a.consumePending(token)
+				a.consumePending(presentedToken)
 				a.publishInvalid()
 				a.report(fmt.Errorf("authstream: publish Vault lookup request: %w", err))
 			}
@@ -234,11 +241,11 @@ func (a *Auth) handleFoundTokens(
 			if !ok {
 				return
 			}
-			key := event.Data.Key
-			if !a.consumePending(key) {
+			presentedToken, ok := a.consumePending(event.Data.Key)
+			if !ok {
 				continue
 			}
-			if event.Data.Token == key {
+			if event.Data.Token == presentedToken {
 				a.publishValid()
 			} else {
 				a.publishInvalid()
@@ -262,27 +269,40 @@ func (a *Auth) handleNotFoundTokens(
 			if !ok {
 				return
 			}
-			if a.consumePending(event.Data.Key) {
+			if _, ok := a.consumePending(event.Data.Key); ok {
 				a.publishInvalid()
 			}
 		}
 	}
 }
 
-func (a *Auth) consumePending(key string) bool {
+func (a *Auth) addPending(key, presentedToken string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	count := a.pending[key]
-	if count == 0 {
-		return false
+	pending := a.pending[key]
+	if pending == nil {
+		pending = &pendingLookup{presentedToken: presentedToken}
+		a.pending[key] = pending
 	}
-	if count == 1 {
+	pending.count++
+}
+
+func (a *Auth) consumePending(key string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	pending := a.pending[key]
+	if pending == nil || pending.count == 0 {
+		return "", false
+	}
+
+	presentedToken := pending.presentedToken
+	pending.count--
+	if pending.count == 0 {
 		delete(a.pending, key)
-	} else {
-		a.pending[key] = count - 1
 	}
-	return true
+	return presentedToken, true
 }
 
 func (a *Auth) publishValid() {
