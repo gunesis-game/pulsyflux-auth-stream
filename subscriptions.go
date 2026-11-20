@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	errNilBearerDependency    = errors.New("authstream: nil bearer-token subscription dependency")
+	errNilBearerDependency     = errors.New("authstream: nil bearer-token subscription dependency")
 	errInvalidIntrospectionURL = errors.New("authstream: invalid bearer-token introspection URL")
 )
 
@@ -60,6 +60,9 @@ func SubscribeBearerToken(
 			return ctx.Err()
 		case event, ok := <-tokenSubscription.Events():
 			if !ok {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				return nil
 			}
 			active, validationErr := introspectBearerToken(ctx, client, introspectionURL, event.Data)
