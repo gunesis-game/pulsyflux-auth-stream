@@ -133,8 +133,8 @@ Do not add generic lifecycle events such as `UserRegistered`, `UserAuthenticated
 1. Auth receives `BearerTokenReceiveEvent` from the external bearer-token stream.
 2. Auth creates a unique UUID request ID and publishes `VaultTokenRequestedEvent` with the lookup key and that request ID.
 3. Vault responds with either `VaultTokenFoundEvent` or `VaultTokenNotFoundEvent`.
-4. Auth matches the response to the pending lookup by UUID request ID. A found token proceeds through Auth's token-validation step; a missing token produces an invalid-token outcome.
-5. Auth publishes exactly the relevant outcome event, `ValidBearerTokenEvent` or `InvalidBearerTokenEvent`.
+4. Auth matches the response to the pending lookup by UUID request ID. A missing token produces an invalid-token outcome. When Vault returns a token, Auth validates that token against the upstream authentication provider; Vault lookup success alone is never proof that the token is valid. The upstream provider's positive validation result is required before Auth may accept the token.
+5. Auth publishes exactly the relevant outcome event, `ValidBearerTokenEvent` only after successful upstream validation, or `InvalidBearerTokenEvent` when the token is missing, rejected, or cannot be validated because the upstream validation attempt fails.
 6. `BearerTokenNotReceiveEvent` is handled as its own incoming no-token condition and results in the appropriate invalid/no-token outcome according to the event contract.
 
 Do not treat the inputs, request, response, and outcome as mutually exclusive event alternatives. They form a causal request/response workflow. Do not correlate by arrival order.
