@@ -113,3 +113,11 @@ go test -race ./...
 go vet ./...
 go build ./...
 ```
+
+## Releases
+
+Push a semantic version tag such as `v1.0.0` to trigger the release
+workflow. It runs the race-enabled test suite, `go vet`, and `go build`
+before creating a GitHub Release with automatically generated release notes.
+No binary artifacts are published; consumers install the Go module using the
+tagged version.
