@@ -1,135 +1,96 @@
+// Package authstream provides Bearer-token authentication subscriptions.
 package authstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+
+	stream "github.com/gunesis-game/pulsyflux-stream"
 )
 
-// Authentication request events contain identifiers only. Credential material
-// must be obtained from a trusted credential store or identity provider.
-type UserAuthenticationRequested struct{ Payload }
-type MFAVerificationRequested struct{ Payload }
+var (
+	errNilBearerDependency = errors.New("authstream: nil bearer-token subscription dependency")
+	errInvalidIntrospectionURL = errors.New("authstream: invalid bearer-token introspection URL")
+)
 
-type UserAuthenticationApproved struct{ Payload }
-type UserAuthenticationDenied struct{ Payload }
-type MFAVerificationApproved struct{ Payload }
-type MFAVerificationDenied struct{ Payload }
-
-func (UserAuthenticationRequested) authEvent() {}
-func (MFAVerificationRequested) authEvent() {}
-func (UserAuthenticationApproved) authEvent() {}
-func (UserAuthenticationDenied) authEvent() {}
-func (MFAVerificationApproved) authEvent() {}
-func (MFAVerificationDenied) authEvent() {}
-
-// UserAuthenticator performs the application's user-authentication check.
-// Implementations may consult a credential store or external identity provider.
-type UserAuthenticator interface {
-	Authenticate(context.Context, UserAuthenticationRequested) (bool, error)
+// bearerIntrospectionResponse is the RFC 7662 token introspection response.
+type bearerIntrospectionResponse struct {
+	Active bool `json:"active"`
 }
 
-// MFAVerifier performs the application's MFA check.
-type MFAVerifier interface {
-	VerifyMFA(context.Context, MFAVerificationRequested) (bool, error)
-}
-
-var ErrNilAuthenticationDependency = errors.New("authstream: nil subscription dependency")
-
-// Subscribe consumes only UserAuthenticationRequested events and publishes
-// one typed decision event for each request. It contains no callback or
-// central event-type dispatch.
-func (UserAuthenticationRequested) Subscribe(
+// SubscribeBearerToken subscribes to raw Bearer tokens, validates each token
+// using an RFC 7662-compatible introspection endpoint, and publishes the
+// active state to decisions. A true value means the token is active; false
+// means it is inactive or invalid. The HTTP client should be configured with
+// any required introspection-client authentication and transport security.
+//
+// The input channel is not closed by this function. The subscription ends
+// when ctx is cancelled or tokens is closed. No callback or exported event
+// types are required.
+func SubscribeBearerToken(
 	ctx context.Context,
-	requests *Stream[UserAuthenticationRequested],
-	authenticator UserAuthenticator,
-	decisions *Stream[AuthEvent],
+	tokens <-chan string,
+	introspectionURL string,
+	client *http.Client,
+	decisions *stream.Stream[bool],
 ) error {
-	if requests == nil || authenticator == nil || decisions == nil {
-		return ErrNilAuthenticationDependency
+	if tokens == nil || client == nil || decisions == nil {
+		return errNilBearerDependency
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	sub, err := requests.Subscribe(ctx)
-	if err != nil {
-		return err
+	parsed, err := url.ParseRequestURI(introspectionURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return errInvalidIntrospectionURL
 	}
-	defer sub.Close()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case item, ok := <-sub.Events():
+		case token, ok := <-tokens:
 			if !ok {
 				return nil
 			}
-			approved, authErr := authenticator.Authenticate(ctx, item.Data)
-			payload := item.Data.Payload
-			if authErr != nil {
-				payload.Reason = "authentication_error"
-				if err := decisions.Publish(UserAuthenticationDenied{Payload: payload}); err != nil {
-					return err
-				}
-				continue
+			active, validationErr := introspectBearerToken(ctx, client, introspectionURL, token)
+			if validationErr != nil {
+				return validationErr
 			}
-			if approved {
-				payload.Reason = ""
-				err = decisions.Publish(UserAuthenticationApproved{Payload: payload})
-			} else {
-				payload.Reason = "authentication_denied"
-				err = decisions.Publish(UserAuthenticationDenied{Payload: payload})
-			}
-			if err != nil {
+			if err := decisions.Publish(stream.Event[bool]{Data: active}); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-// Subscribe consumes only MFAVerificationRequested events and publishes
-// one typed decision event for each request.
-func (MFAVerificationRequested) Subscribe(
-	ctx context.Context,
-	requests *Stream[MFAVerificationRequested],
-	verifier MFAVerifier,
-	decisions *Stream[AuthEvent],
-) error {
-	if requests == nil || verifier == nil || decisions == nil {
-		return ErrNilAuthenticationDependency
+func introspectBearerToken(ctx context.Context, client *http.Client, endpoint, token string) (bool, error) {
+	if strings.TrimSpace(token) == "" {
+		return false, nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	sub, err := requests.Subscribe(ctx)
+	form := url.Values{"token": []string{token}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return false, err
 	}
-	defer sub.Close()
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
 
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case item, ok := <-sub.Events():
-			if !ok {
-				return nil
-			}
-			verified, verifyErr := verifier.VerifyMFA(ctx, item.Data)
-			payload := item.Data.Payload
-			if verifyErr != nil {
-				payload.Reason = "mfa_verification_error"
-				err = decisions.Publish(MFAVerificationDenied{Payload: payload})
-			} else if verified {
-				payload.Reason = ""
-				err = decisions.Publish(MFAVerificationApproved{Payload: payload})
-			} else {
-				payload.Reason = "mfa_verification_denied"
-				err = decisions.Publish(MFAVerificationDenied{Payload: payload})
-			}
-			if err != nil {
-				return err
-			}
-		}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, errors.New("authstream: token introspection endpoint returned non-200 status")
+	}
+	var result bearerIntrospectionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
+	}
+	return result.Active, nil
 }
