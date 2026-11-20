@@ -99,7 +99,7 @@ The three auth integration events are exactly `VaultTokenRequestedEvent`, `Vault
 - Vault is now available as a Go module, and its three auth lookup event types are defined and committed on Vault `main`.
 - The previous conversation ended before Auth integration was implemented. The assistant had only inspected Auth and Vault source and identified the construction-model mismatch described above.
 - No Auth integration code, dependency update, or Auth integration tests should be assumed to exist yet.
-- The immediate next action is design and implement the shared-channel bridge while preserving the closed `AuthEvent` union and existing API.
+- The immediate next action is design and implement the shared-channel bridge around Auth-owned token comparison: incoming bearer token versus Vault-returned stored token. Do not delegate token validation to upstream.
 
 ## Auth integration decisions from the 2026-11-20 continuation (authoritative)
 
@@ -107,7 +107,7 @@ The following decisions were made explicitly in the latest design discussion. Th
 
 ### Event ownership and direction
 
-Auth is an orchestration participant in a single authentication flow. These events are phases and outcomes in that flow, not mutually exclusive alternatives at the system level.
+Auth owns the bearer-token validation decision in this flow. The upstream component supplies the presented bearer token to Auth; it is not responsible for validating it. Vault supplies the stored token for comparison. Auth compares the presented token with the Vault-returned token and publishes the validity outcome. These events are phases and outcomes in one causal flow, not mutually exclusive alternatives at the system level.
 
 **External input events — Auth subscribes:**
 - `BearerTokenReceiveEvent`: an upstream component reports that a bearer token was received. This starts the token lookup/authentication path.
@@ -123,8 +123,8 @@ These bearer-token input streams are owned/registered by components outside the 
 The Vault package owns/registers all three Vault streams. Auth does not create or close them. The found/not-found responses are correlated to individual requests by their `RequestID`; they are the possible response outcomes for a lookup, not unrelated mutually exclusive system states.
 
 **Auth-owned output events — Auth publishes:**
-- `ValidBearerTokenEvent`: publish when the received bearer token has been successfully resolved and validated.
-- `InvalidBearerTokenEvent`: publish when the bearer-token flow cannot produce a valid token, including a missing Vault token or a failed validation.
+- `ValidBearerTokenEvent`: publish only when Auth confirms that the incoming bearer token matches the token retrieved from Vault.
+- `InvalidBearerTokenEvent`: publish when the bearer-token flow cannot establish that match, including a missing Vault token or a token mismatch.
 
 Do not add generic lifecycle events such as `UserRegistered`, `UserAuthenticated`, `AuthenticationFailed`, `UserLoggedOut`, `TokenIssued`, `TokenRefreshed`, or `TokenRevoked`. Those are outside the agreed scope of this package's stream integration and must be removed rather than retained as extra Auth outputs. Do not add unrelated password-reset or MFA lifecycle events.
 
@@ -133,8 +133,8 @@ Do not add generic lifecycle events such as `UserRegistered`, `UserAuthenticated
 1. Auth receives `BearerTokenReceiveEvent` from the external bearer-token stream.
 2. Auth creates a unique UUID request ID and publishes `VaultTokenRequestedEvent` with the lookup key and that request ID.
 3. Vault responds with either `VaultTokenFoundEvent` or `VaultTokenNotFoundEvent`.
-4. Auth matches the response to the pending lookup by UUID request ID. A missing token produces an invalid-token outcome. When Vault returns a token, Auth validates that token against the upstream authentication provider; Vault lookup success alone is never proof that the token is valid. The upstream provider's positive validation result is required before Auth may accept the token.
-5. Auth publishes exactly the relevant outcome event, `ValidBearerTokenEvent` only after successful upstream validation, or `InvalidBearerTokenEvent` when the token is missing, rejected, or cannot be validated because the upstream validation attempt fails.
+4. Auth matches the response to the pending lookup by UUID request ID. A `VaultTokenNotFoundEvent` produces an invalid-token outcome. When Vault returns `VaultTokenFoundEvent`, Auth compares the token presented in the incoming `BearerTokenReceiveEvent` with the stored token returned by Vault. Auth owns this validation decision; it does not send the token to upstream for validation.
+5. Auth publishes exactly the relevant outcome event: `ValidBearerTokenEvent` only when the presented token matches the stored Vault token, or `InvalidBearerTokenEvent` when the token is missing, does not match, or the lookup/validation flow fails.
 6. `BearerTokenNotReceiveEvent` is handled as its own incoming no-token condition and results in the appropriate invalid/no-token outcome according to the event contract.
 
 Do not treat the inputs, request, response, and outcome as mutually exclusive event alternatives. They form a causal request/response workflow. Do not correlate by arrival order.
@@ -169,5 +169,5 @@ This is a conceptual ownership/reference list, not a claim that these exact decl
 
 ### Immediate implementation direction
 
-The next coding task is to revise the existing Auth package around this flow, rather than extending its old generic lifecycle-event catalogue. First inspect the current Auth files and both dependency APIs. Then remove the out-of-scope lifecycle event types and implement only the agreed bearer-token inputs, Vault lookup request/response handling, and valid/invalid bearer-token outputs. Keep the public API small and document the shared-channel ownership contract. Add integration tests for found, not-found, no-bearer-token, concurrent request correlation, and cancellation/shutdown. Nothing in this section should be interpreted as already implemented or tested.
+The next coding task is to revise the existing Auth package around this flow, rather than extending its old generic lifecycle-event catalogue. First inspect the current Auth files and both dependency APIs. Then remove the out-of-scope lifecycle event types and implement only the agreed bearer-token inputs, Vault lookup request/response handling, Auth-owned comparison of the incoming token against the Vault-returned token, and valid/invalid bearer-token outputs. Do not call upstream to validate the token: upstream supplies the presented token to Auth, while Auth makes the validation decision. Keep the public API small and document the shared-channel ownership contract. Add integration tests for matching tokens, mismatches, not-found, no-bearer-token, concurrent request correlation, and cancellation/shutdown. Nothing in this section should be interpreted as already implemented or tested.
 
