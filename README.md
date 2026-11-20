@@ -15,23 +15,30 @@ RFC 7662-compatible HTTPS introspection endpoint, and publishes the
 endpoint's `active` decision to a `pulsyflux-stream.Stream[bool]`.
 
 ```go
-tokens := stream.New[string](16)
-decisions := stream.New[bool](16)
-defer tokens.Close()
-defer decisions.Close()
-
-go func() {
+func runBearerSubscription(
+    ctx context.Context,
+    tokens *stream.Stream[string],
+    client *http.Client,
+    decisions *stream.Stream[bool],
+) {
     err := authstream.SubscribeBearerToken(
         ctx,
         tokens,
         "https://identity.example.com/oauth2/introspect",
-        httpClient,
+        client,
         decisions,
     )
     if err != nil && !errors.Is(err, context.Canceled) {
         log.Printf("Bearer subscription stopped: %v", err)
     }
-}()
+}
+
+tokens := stream.New[string](16)
+decisions := stream.New[bool](16)
+defer tokens.Close()
+defer decisions.Close()
+
+go runBearerSubscription(ctx, tokens, httpClient, decisions)
 
 err := tokens.Publish(stream.Event[string]{Data: bearerToken})
 ```
