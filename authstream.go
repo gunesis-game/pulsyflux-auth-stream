@@ -44,8 +44,8 @@ type InvalidBearerTokenEvent struct{}
 // publishes Auth-owned validation outcomes. It never owns or closes the
 // EventChannel or the upstream/Vault streams.
 type Auth struct {
-	ValidBearerTokenEvents   *stream.Stream[ValidBearerTokenEvent]
-	InvalidBearerTokenEvents *stream.Stream[InvalidBearerTokenEvent]
+	validBearerTokenEvents   *stream.Stream[ValidBearerTokenEvent]
+	invalidBearerTokenEvents *stream.Stream[InvalidBearerTokenEvent]
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -93,8 +93,8 @@ func New(ctx context.Context, channel *stream.EventChannel) (*Auth, error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	auth := &Auth{
-		ValidBearerTokenEvents:   validEvents,
-		InvalidBearerTokenEvents: invalidEvents,
+		validBearerTokenEvents:   validEvents,
+		invalidBearerTokenEvents: invalidEvents,
 		cancel:                   cancel,
 		pending:                  make(map[string]int),
 		errors:                   make(chan error, subscriberBuffer),
@@ -286,7 +286,7 @@ func (a *Auth) consumePending(key string) bool {
 }
 
 func (a *Auth) publishValid() {
-	if err := a.ValidBearerTokenEvents.Publish(stream.Event[ValidBearerTokenEvent]{
+	if err := a.validBearerTokenEvents.Publish(stream.Event[ValidBearerTokenEvent]{
 		Name: "auth.bearer.valid",
 		Data: ValidBearerTokenEvent{},
 	}); err != nil {
@@ -295,7 +295,7 @@ func (a *Auth) publishValid() {
 }
 
 func (a *Auth) publishInvalid() {
-	if err := a.InvalidBearerTokenEvents.Publish(stream.Event[InvalidBearerTokenEvent]{
+	if err := a.invalidBearerTokenEvents.Publish(stream.Event[InvalidBearerTokenEvent]{
 		Name: "auth.bearer.invalid",
 		Data: InvalidBearerTokenEvent{},
 	}); err != nil {

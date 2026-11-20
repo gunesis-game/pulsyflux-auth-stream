@@ -48,11 +48,19 @@ func newTestSystem(t *testing.T) *testSystem {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validSub, err := auth.ValidBearerTokenEvents.Subscribe(ctx)
+	validEvents := stream.Get[ValidBearerTokenEvent](channel)
+	if validEvents == nil {
+		t.Fatal("valid-token output stream was not registered")
+	}
+	invalidEvents := stream.Get[InvalidBearerTokenEvent](channel)
+	if invalidEvents == nil {
+		t.Fatal("invalid-token output stream was not registered")
+	}
+	validSub, err := validEvents.Subscribe(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalidSub, err := auth.InvalidBearerTokenEvents.Subscribe(ctx)
+	invalidSub, err := invalidEvents.Subscribe(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

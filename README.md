@@ -34,8 +34,8 @@ lookup it belongs to within that workflow.
 ## Setup
 
 Register the upstream input streams and initialize Vault on the same channel
-before constructing Auth. Subscribe to Auth's output streams before publishing
-any bearer input events.
+before constructing Auth. Retrieve Auth's output streams with stream.Get[T](channel) and subscribe
+before publishing any bearer input events.
 
 ```go
 channel := stream.NewEventChannel()
@@ -64,13 +64,21 @@ if err != nil {
 }
 defer auth.Close()
 
-valid, err := auth.ValidBearerTokenEvents.Subscribe(ctx)
+validEvents := stream.Get[authstream.ValidBearerTokenEvent](channel)
+if validEvents == nil {
+    return errors.New("Auth valid-token stream was not registered")
+}
+valid, err := validEvents.Subscribe(ctx)
 if err != nil {
     return err
 }
 defer valid.Close()
 
-invalid, err := auth.InvalidBearerTokenEvents.Subscribe(ctx)
+invalidEvents := stream.Get[authstream.InvalidBearerTokenEvent](channel)
+if invalidEvents == nil {
+    return errors.New("Auth invalid-token stream was not registered")
+}
+invalid, err := invalidEvents.Subscribe(ctx)
 if err != nil {
     return err
 }

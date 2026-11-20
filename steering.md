@@ -17,7 +17,9 @@ Auth defines and exposes these input events for upstream publishers:
 - `BearerTokenReceiveEvent{Token string}`
 - `BearerTokenNotReceiveEvent{}`
 
-Auth publishes only these credential-free outcomes:
+Auth publishes only these credential-free outcomes. Consumers retrieve their
+streams from the shared EventChannel with stream.Get[T](channel), rather than
+accessing stream fields on Auth:
 
 - `ValidBearerTokenEvent{}`
 - `InvalidBearerTokenEvent{}`
@@ -54,7 +56,8 @@ Keep one Auth validation consumer per workflow channel.
 2. Vault is initialized on that same channel and registers its streams.
 3. Auth.New retrieves those streams, registers its output streams, subscribes
    to Vault responses first, then subscribes to upstream inputs.
-4. The application subscribes to Auth outputs before publishing input events.
+4. Upstream retrieves Auth output streams with stream.Get[EventType](channel)
+   and subscribes before publishing input events.
 5. Auth.Close cancels and joins only Auth-owned subscriptions/workers. It does
    not close the EventChannel or any upstream/Vault/output streams.
 6. The application closes the shared EventChannel after all workflow
