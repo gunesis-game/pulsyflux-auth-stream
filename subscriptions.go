@@ -13,27 +13,26 @@ import (
 )
 
 var (
-	errNilBearerDependency = errors.New("authstream: nil bearer-token subscription dependency")
+	errNilBearerDependency    = errors.New("authstream: nil bearer-token subscription dependency")
 	errInvalidIntrospectionURL = errors.New("authstream: invalid bearer-token introspection URL")
 )
 
 // bearerIntrospectionResponse is the RFC 7662 token introspection response.
 type bearerIntrospectionResponse struct {
-	Active bool `json:"active"`
+	Active *bool `json:"active"`
 }
 
-// SubscribeBearerToken subscribes to raw Bearer tokens, validates each token
-// using an RFC 7662-compatible introspection endpoint, and publishes the
-// active state to decisions. A true value means the token is active; false
-// means it is inactive or invalid. The HTTP client should be configured with
-// any required introspection-client authentication and transport security.
+// SubscribeBearerToken subscribes directly to the token stream, validates each
+// Bearer token using an RFC 7662-compatible HTTPS introspection endpoint, and
+// publishes only the active decision. A true value means active; false means
+// inactive. The HTTP client must provide the endpoint's required client
+// authentication and trusted TLS configuration.
 //
-// The input channel is not closed by this function. The subscription ends
-// when ctx is cancelled or tokens is closed. No callback or exported event
-// types are required.
+// The input stream is not closed by this function. The subscription ends when
+// ctx is cancelled or the input stream is closed.
 func SubscribeBearerToken(
 	ctx context.Context,
-	tokens <-chan string,
+	tokens *stream.Stream[string],
 	introspectionURL string,
 	client *http.Client,
 	decisions *stream.Stream[bool],
@@ -49,15 +48,21 @@ func SubscribeBearerToken(
 		return errInvalidIntrospectionURL
 	}
 
+	tokenSubscription, err := tokens.Subscribe(ctx)
+	if err != nil {
+		return err
+	}
+	defer tokenSubscription.Close()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case token, ok := <-tokens:
+		case event, ok := <-tokenSubscription.Events():
 			if !ok {
 				return nil
 			}
-			active, validationErr := introspectBearerToken(ctx, client, introspectionURL, token)
+			active, validationErr := introspectBearerToken(ctx, client, introspectionURL, event.Data)
 			if validationErr != nil {
 				return validationErr
 			}
@@ -92,5 +97,8 @@ func introspectBearerToken(ctx context.Context, client *http.Client, endpoint, t
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, err
 	}
-	return result.Active, nil
+	if result.Active == nil {
+		return false, errors.New("authstream: token introspection response omitted active")
+	}
+	return *result.Active, nil
 }
