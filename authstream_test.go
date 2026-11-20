@@ -2,6 +2,7 @@ package authstream
 
 import (
 	"context"
+	"fmt"
 	"errors"
 	"testing"
 	"time"
