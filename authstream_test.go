@@ -10,7 +10,7 @@ import (
 )
 
 func TestPublishAndSubscribe(t *testing.T) {
-	events := New(2)
+	events := New[AuthEvent](2)
 	defer events.Close()
 
 	sub, err := events.Subscribe(context.Background())
@@ -19,15 +19,12 @@ func TestPublishAndSubscribe(t *testing.T) {
 	}
 	defer sub.Close()
 
-	want := Event{
-		Name: UserAuthenticated,
-		Data: Payload{
-			UserID:    "user-42",
-			SessionID: "session-7",
-			Provider:  "oidc",
-			RequestID: "request-9",
-		},
-	}
+	want := UserAuthenticated{Payload: Payload{
+		UserID:    "user-42",
+		SessionID: "session-7",
+		Provider:  "oidc",
+		RequestID: "request-9",
+	}}
 	if err := events.Publish(want); err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +34,8 @@ func TestPublishAndSubscribe(t *testing.T) {
 		if !ok {
 			t.Fatal("subscription closed before receiving event")
 		}
-		if got.Name != want.Name || got.Data != want.Data {
-			t.Fatalf("got %#v, want %#v", got, want)
+		if got.Data != want {
+			t.Fatalf("got %#v, want %#v", got.Data, want)
 		}
 		if got.Time.IsZero() {
 			t.Fatal("Publish did not populate event timestamp")
@@ -48,17 +45,8 @@ func TestPublishAndSubscribe(t *testing.T) {
 	}
 }
 
-func TestPublishRejectsEmptyName(t *testing.T) {
-	events := New(1)
-	defer events.Close()
-
-	if err := events.Publish(Event{}); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("got %v, want ErrInvalidEvent", err)
-	}
-}
-
-func TestSlowSubscriberErrorIsPreserved(t *testing.T) {
-	events := New(1)
+func TestConcreteEventStream(t *testing.T) {
+	events := New[UserLoggedOut](1)
 	defer events.Close()
 
 	sub, err := events.Subscribe(context.Background())
@@ -67,7 +55,32 @@ func TestSlowSubscriberErrorIsPreserved(t *testing.T) {
 	}
 	defer sub.Close()
 
-	event := Event{Name: UserAuthenticated}
+	want := UserLoggedOut{Payload: Payload{UserID: "user-42"}}
+	if err := events.Publish(want); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-sub.Events():
+		if got.Data != want {
+			t.Fatalf("got %#v, want %#v", got.Data, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for typed event")
+	}
+}
+
+func TestSlowSubscriberErrorIsPreserved(t *testing.T) {
+	events := New[AuthEvent](1)
+	defer events.Close()
+
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	event := UserAuthenticated{}
 	if err := events.Publish(event); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +90,7 @@ func TestSlowSubscriberErrorIsPreserved(t *testing.T) {
 }
 
 func TestContextCancellation(t *testing.T) {
-	events := New(1)
+	events := New[AuthEvent](1)
 	defer events.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,7 +111,7 @@ func TestContextCancellation(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	events := New(1)
+	events := New[AuthEvent](1)
 	sub, err := events.Subscribe(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +120,7 @@ func TestClose(t *testing.T) {
 	events.Close()
 	events.Close()
 
-	if err := events.Publish(Event{Name: UserLoggedOut}); !errors.Is(err, stream.ErrClosed) {
+	if err := events.Publish(UserLoggedOut{}); !errors.Is(err, stream.ErrClosed) {
 		t.Fatalf("got %v, want stream.ErrClosed", err)
 	}
 	if _, ok := <-sub.Events(); ok {
