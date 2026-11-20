@@ -64,22 +64,16 @@ type Event[T AuthEvent] struct {
 
 // Subscription receives typed authentication events.
 type Subscription[T AuthEvent] struct {
-	sub *stream.Subscription[T]
+	sub    *stream.Subscription[T]
+	events <-chan Event[T]
 }
 
 // Events returns the read-only channel of typed authentication events.
 func (s *Subscription[T]) Events() <-chan Event[T] {
-	if s == nil || s.sub == nil {
+	if s == nil {
 		return nil
 	}
-	out := make(chan Event[T])
-	go func() {
-		defer close(out)
-		for event := range s.sub.Events() {
-			out <- Event[T]{Data: event.Data, Time: event.Time}
-		}
-	}()
-	return out
+	return s.events
 }
 
 // Close unregisters the subscription. It is safe to call more than once.
@@ -109,7 +103,14 @@ func (s *Stream[T]) Subscribe(ctx context.Context) (*Subscription[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription[T]{sub: sub}, nil
+	out := make(chan Event[T], cap(sub.Events()))
+	go func() {
+		defer close(out)
+		for event := range sub.Events() {
+			out <- Event[T]{Data: event.Data, Time: event.Time}
+		}
+	}()
+	return &Subscription[T]{sub: sub, events: out}, nil
 }
 
 // Publish sends a typed authentication event to every active subscriber.
