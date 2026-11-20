@@ -9,14 +9,15 @@ and authentication implementation details remain private.
 
 ## Bearer token validation
 
-`SubscribeBearerToken` consumes tokens from a read-only Go channel, validates
-each token through an RFC 7662-compatible introspection endpoint, and
-publishes the endpoint's `active` result to a
-`pulsyflux-stream.Stream[bool]`.
+`SubscribeBearerToken` subscribes directly to a
+`pulsyflux-stream.Stream[string]`, validates each token through an
+RFC 7662-compatible HTTPS introspection endpoint, and publishes the
+endpoint's `active` decision to a `pulsyflux-stream.Stream[bool]`.
 
 ```go
-tokens := make(chan string)
+tokens := stream.New[string](16)
 decisions := stream.New[bool](16)
+defer tokens.Close()
 defer decisions.Close()
 
 go func() {
@@ -31,6 +32,8 @@ go func() {
         log.Printf("Bearer subscription stopped: %v", err)
     }
 }()
+
+err := tokens.Publish(stream.Event[string]{Data: bearerToken})
 ```
 
 Configure the supplied HTTP client with the introspection endpoint's required
@@ -42,9 +45,10 @@ the token and returning its active state.
 ## API boundaries
 
 - The only exported package function is `SubscribeBearerToken`.
+- The function explicitly subscribes to the token stream and owns the
+  Bearer-token validation and decision publishing loop.
 - No authentication event structs, stream wrappers, payloads, or internal
   helpers are exported.
-- No callbacks, anonymous functions, or handler interfaces are used.
 - Bearer tokens are sent only to the configured introspection endpoint and
   are never published to the decision stream.
 - The decision stream publishes `true` for active tokens and `false` for
