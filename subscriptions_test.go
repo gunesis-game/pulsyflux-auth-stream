@@ -137,9 +137,20 @@ func TestSubscribeBearerTokenStopsWhenInputStreamCloses(t *testing.T) {
 	tokens := stream.New[string](1)
 	decisions := stream.New[bool](1)
 	defer decisions.Close()
+	sub, err := decisions.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
 
 	done := make(chan error, 1)
 	go runBearerSubscription(ctx, tokens, "https://identity.example.com/introspect", http.DefaultClient, decisions, done)
+	if err := tokens.Publish(stream.Event[string]{Data: " "}); err != nil {
+		t.Fatal(err)
+	}
+	if receiveDecision(t, sub.Events()) {
+		t.Fatal("blank token must be inactive")
+	}
 	tokens.Close()
 	if err := receiveSubscriptionError(t, done); err != nil {
 		t.Fatalf("SubscribeBearerToken error = %v, want nil", err)
