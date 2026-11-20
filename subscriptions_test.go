@@ -12,7 +12,7 @@ import (
 )
 
 func TestSubscribeBearerTokenPublishesActiveDecision(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
@@ -61,7 +61,7 @@ func TestSubscribeBearerTokenPublishesActiveDecision(t *testing.T) {
 }
 
 func TestSubscribeBearerTokenRejectsBlankToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("blank token must not be sent to introspection endpoint")
 	}))
 	defer server.Close()
@@ -94,11 +94,11 @@ func TestSubscribeBearerTokenRejectsBlankToken(t *testing.T) {
 	<-done
 }
 
-func TestSubscribeBearerTokenRequiresHTTPSOrHTTPURL(t *testing.T) {
+func TestSubscribeBearerTokenRequiresHTTPS(t *testing.T) {
 	tokens := make(chan string)
 	decisions := stream.New[bool](1)
 	defer decisions.Close()
-	err := SubscribeBearerToken(context.Background(), tokens, "file:///tmp/token", http.DefaultClient, decisions)
+	err := SubscribeBearerToken(context.Background(), tokens, "http://identity.example.com/introspect", http.DefaultClient, decisions)
 	if err == nil {
 		t.Fatal("expected invalid introspection URL error")
 	}
