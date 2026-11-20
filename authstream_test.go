@@ -290,3 +290,141 @@ func TestAuthStopsOnContextCancellation(t *testing.T) {
 		t.Fatalf("Auth.Close closed no-bearer stream: %v", err)
 	}
 }
+
+
+func TestNewRejectsNilEventChannel(t *testing.T) {
+	if _, err := New(context.Background(), nil); !errors.Is(err, ErrNilEventChannel) {
+		t.Fatalf("New error = %v, want ErrNilEventChannel", err)
+	}
+}
+
+func TestNewAcceptsNilContext(t *testing.T) {
+	channel := stream.NewEventChannel()
+	defer channel.Close()
+	if _, err := stream.New[BearerTokenReceiveEvent](channel, 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.New[BearerTokenNotReceiveEvent](channel, 8); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := vaultstream.New(nil, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vault.Close()
+	auth, err := New(nil, channel)
+	if err != nil {
+		t.Fatalf("New with nil context: %v", err)
+	}
+	auth.Close()
+}
+
+func TestAuthRejectsEmptyAndWhitespaceTokens(t *testing.T) {
+	for _, token := range []string{"", " ", "\t\n"} {
+		t.Run(fmt.Sprintf("%q", token), func(t *testing.T) {
+			s := newTestSystem(t)
+			if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
+				Name: "upstream.bearer.received",
+				Data: BearerTokenReceiveEvent{Token: token},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			receiveInvalid(t, s.invalidSub)
+			assertNoValidEvent(t, s.validSub)
+		})
+	}
+}
+
+func TestAuthHandlesRepeatedIdenticalTokensConcurrently(t *testing.T) {
+	s := newTestSystem(t)
+	const count = 12
+	s.store(t, "repeated-token", "repeated-token")
+
+	for i := 0; i < count; i++ {
+		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
+			Name: "upstream.bearer.received",
+			Data: BearerTokenReceiveEvent{Token: "repeated-token"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < count; i++ {
+		receiveValid(t, s.validSub)
+	}
+	assertNoInvalidEvent(t, s.invalidSub)
+}
+
+func TestAuthPublishesOneInvalidOutcomePerNoBearerEvent(t *testing.T) {
+	s := newTestSystem(t)
+	const count = 5
+	for i := 0; i < count; i++ {
+		if err := s.noBearer.Publish(stream.Event[BearerTokenNotReceiveEvent]{
+			Name: "upstream.bearer.not_received",
+			Data: BearerTokenNotReceiveEvent{},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < count; i++ {
+		receiveInvalid(t, s.invalidSub)
+	}
+	assertNoValidEvent(t, s.validSub)
+}
+
+func TestAuthIgnoresVaultResponsesWithoutPendingLookup(t *testing.T) {
+	s := newTestSystem(t)
+	if err := s.vault.VaultTokenFoundEvents.Publish(stream.Event[vaultstream.VaultTokenFoundEvent]{
+		Name: "vault.token.found",
+		Data: vaultstream.VaultTokenFoundEvent{Key: "unsolicited", Token: "unsolicited"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.vault.VaultTokenNotFoundEvents.Publish(stream.Event[vaultstream.VaultTokenNotFoundEvent]{
+		Name: "vault.token.not_found",
+		Data: vaultstream.VaultTokenNotFoundEvent{Key: "also-unsolicited"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertNoValidEvent(t, s.validSub)
+	assertNoInvalidEvent(t, s.invalidSub)
+}
+
+func TestAuthCloseIsIdempotentAndLeavesOutputStreamsOpen(t *testing.T) {
+	s := newTestSystem(t)
+	s.auth.Close()
+	s.auth.Close()
+
+	valid := stream.Get[ValidBearerTokenEvent](s.channel)
+	invalid := stream.Get[InvalidBearerTokenEvent](s.channel)
+	if valid == nil || invalid == nil {
+		t.Fatal("Auth.Close removed an Auth output stream")
+	}
+	validSub, err := valid.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe to valid output after Auth.Close: %v", err)
+	}
+	validSub.Close()
+	invalidSub, err := invalid.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe to invalid output after Auth.Close: %v", err)
+	}
+	invalidSub.Close()
+}
+
+func assertNoValidEvent(t *testing.T, sub *stream.Subscription[ValidBearerTokenEvent]) {
+	t.Helper()
+	select {
+	case event := <-sub.Events():
+		t.Fatalf("unexpected valid-token event: %#v", event)
+	case <-time.After(75 * time.Millisecond):
+	}
+}
+
+func assertNoInvalidEvent(t *testing.T, sub *stream.Subscription[InvalidBearerTokenEvent]) {
+	t.Helper()
+	select {
+	case event := <-sub.Events():
+		t.Fatalf("unexpected invalid-token event: %#v", event)
+	case <-time.After(75 * time.Millisecond):
+	}
+}
