@@ -35,11 +35,11 @@ The original design principle remains important:
 - Do not route all event types through one generic handler or a central type switch.
 - Do not add separate Handle... functions as a handler layer.
 
-The later scope decision narrowed the package to Bearer-token authentication only. When refining the exact subscription API, preserve the event-/operation-owned subscription principle where applicable while keeping the public surface limited to subscription functions in subscriptions.go.
+The later scope decision narrowed the package to Bearer-token authentication only. Preserve the event-/operation-owned subscription principle while keeping the public surface limited to subscription functions in subscriptions.go.
 
 ## Bearer-token validation
 
-- The current implementation uses an HTTPS RFC 7662-compatible token introspection endpoint. The intention is to support both JWT-formatted and opaque Bearer tokens through the trusted introspection service, without baking a token format into this package.
+- Use an HTTPS RFC 7662-compatible token introspection endpoint. This supports both JWT-formatted and opaque Bearer tokens through the trusted introspection service, without baking a token format into this package.
 - The introspection service is responsible for deciding whether a token is active.
 - Never log, publish, or expose raw Bearer tokens or other credential material.
 - Publish only the authentication decision/result, not the token itself.
@@ -50,33 +50,37 @@ The later scope decision narrowed the package to Bearer-token authentication onl
 
 ## Current implementation snapshot
 
-Work was made on branch: feat/event-owned-auth-subscriptions
+Work is on branch: feat/event-owned-auth-subscriptions
 
 Open draft pull request: https://github.com/gunesis-game/pulsyflux-auth-stream/pull/2
 
-The branch currently contains a Bearer-only refactor:
-- authstream.go was reduced to a package declaration/comment, with implementation details removed from its exported surface.
-- subscriptions.go currently defines the exported SubscribeBearerToken function and private HTTPS introspection helpers.
-- SubscribeBearerToken currently consumes Bearer token strings from a Go receive-only channel, introspects them, and publishes a boolean active/inactive result to pulsyflux-stream.Stream[bool].
-- subscriptions_test.go contains tests for active decisions, blank tokens, cancellation, and rejecting non-HTTPS URLs.
-- README.md documents the Bearer-only scope and narrow public API.
+The branch contains a Bearer-only implementation:
+- authstream.go contains only the package declaration/comment.
+- subscriptions.go exposes SubscribeBearerToken and keeps the introspection response and helper private.
+- SubscribeBearerToken accepts a *pulsyflux-stream.Stream[string], explicitly calls Subscribe(ctx), consumes its Events() channel, introspects each token, and publishes only stream.Event[bool] decisions to *pulsyflux-stream.Stream[bool].
+- Blank tokens produce an inactive decision without being sent to the introspection endpoint.
+- The input stream is not closed by the subscription. Context cancellation returns the context error; closing the input stream ends the subscription.
+- The introspection response must contain an active boolean. Non-200 responses and malformed/missing active values return errors without exposing token contents.
+- subscriptions_test.go covers active decisions, blank tokens, cancellation, input-stream closure, malformed introspection responses, and HTTPS enforcement.
+- The obsolete authstream_test.go for the removed generic event API has been deleted.
+- README.md documents the stream-based API and Bearer-only scope.
 
-This snapshot is a work in progress, not a declaration that the design is fully finished. In particular, verify that the current channel input and boolean decision output correctly satisfy the intended event-specific Subscribe() architecture and the real pulsyflux-stream API. Do not preserve an incorrect API merely because it is already committed to the branch.
+The public API and dependency API were reconciled against the actual pulsyflux-stream dependency version in go.mod. Its Stream[T], Event[T], Subscribe(ctx), Subscription.Events(), and Publish(Event[T]) APIs are the ones used here.
 
 ## Required next steps
 
-1. Read this file and inspect the current repository branch and PR before making changes.
-2. Inspect the actual public API of the current pulsyflux-stream dependency. Do not guess names, generic constraints, event envelope types, or method signatures.
-3. Reconcile subscriptions.go with the agreed explicit, channel-based, event-/operation-owned Subscribe() design.
+1. Inspect the current repository branch and PR before making changes.
+2. Re-check the actual public API of the pulsyflux-stream dependency if its pinned version changes. Do not guess names, generic constraints, event envelope types, or method signatures.
+3. Keep the explicit, channel-based, event-/operation-owned Subscribe() design. Do not replace it with callbacks or a generic handler.
 4. Ensure the only exported package symbols are the intended subscription functions. Check with Go tooling, including go doc and an external-package compile test.
 5. Review all files and remove remnants of username/password, MFA, password-reset, session, and other non-Bearer workflows.
-6. Verify HTTPS enforcement, context cancellation, closed-channel behavior, introspection response handling, and decision publishing.
+6. Verify HTTPS enforcement, context cancellation, closed-stream behavior, introspection response handling, and decision publishing.
 7. Run gofmt, go test -race ./..., go vet ./..., and go build ./....
 8. Fix compile/test/API issues before marking the PR ready. Do not merge unless explicitly asked.
 
 ## Collaboration rules
 
 - Follow the owner's corrections literally. They have repeatedly emphasized: Go, not JavaScript; no callbacks; no anonymous functions; no generic handler layer; explicit Subscribe() logic in the relevant function body.
-- Ask one concise clarification only when a material design decision cannot be determined from the repository or this guide. Do not repeatedly ask whether the package should support JWT versus opaque tokens: the current intended approach is introspection, which can support either.
+- Ask one concise clarification only when a material design decision cannot be determined from the repository or this guide. Do not repeatedly ask whether the package should support JWT versus opaque tokens: the intended approach is introspection, which can support either.
 - Do not claim code was tested, built, committed, pushed, or merged unless the corresponding action actually succeeded and the result was verified.
 - Keep changes focused. Do not refactor pulsyflux-stream as part of this repository's work unless explicitly requested.
