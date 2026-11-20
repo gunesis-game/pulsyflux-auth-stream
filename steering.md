@@ -20,7 +20,7 @@ Read this file first when continuing work in a new session. It records the agree
 ## Public API and ownership
 
 The owner's intended public API is:
-- `New(ctx context.Context) (*AuthStream, error)`
+- `New(ctx context.Context, channel *stream.EventChannel) (*AuthStream, error)`
 - `(s *AuthStream) Subscribe() error`
 
 The package should not expose standalone functions such as `SubscribeBearerToken`, generic handler abstractions, callbacks, or public implementation helpers. The `AuthStream` type and the typed event types required by callers are domain API; implementation fields and helper types/functions remain private.
@@ -43,7 +43,7 @@ type AuthStream struct {
 }
 ```
 
-The fields above are acquired from the `pulsyflux-stream` store using typed `stream.Get[T]()` calls, not initialized inside the struct declaration. `New(ctx)` should validate context and retrieve/validate all required registered streams, then retain them on `AuthStream`. Do not create replacement streams in the auth package if the shared store is expected to own them.
+The fields above are acquired from the `pulsyflux-stream` store using typed `stream.Get[T]()` calls, not initialized inside the struct declaration. `New(ctx, channel)` should validate context and the supplied channel, then retrieve/validate all required registered streams, then retain them on `AuthStream`. Do not create replacement streams in the auth package if the shared store is expected to own them.
 
 ## Typed event streams and intended flow
 
@@ -105,7 +105,7 @@ Do not assume these event types or their payloads are already correctly defined.
 1. Inspect current branch, PR, files, and recent commits before editing.
 2. Inspect the pinned `pulsyflux-stream` dependency and verify store registration, `Get[T]()`, `Subscribe(ctx)`, subscription channel, event envelope, and `Publish` signatures.
 3. Inspect all existing event definitions and their payloads. Confirm Vault request/response correlation before implementing concurrent processing.
-4. Implement `AuthStream`, `New(ctx)`, and `(*AuthStream).Subscribe()` with the exact typed stream responsibilities above.
+4. Implement `AuthStream`, `New(ctx, channel)`, and `(*AuthStream).Subscribe()` with the exact typed stream responsibilities above.
 5. Ensure the intended public API is limited to `AuthStream`, `New`, `(*AuthStream).Subscribe`, and event types required for typed inter-package communication. Keep helpers private.
 6. Add tests for stream registration/missing streams, received and absent token events, Vault found/not-found responses, correlation, cancellation, closed streams, publish/subscribe errors, and cleanup.
 7. Run `gofmt`, `go test -race ./...`, `go vet ./...`, and `go build ./...`.
