@@ -47,6 +47,9 @@ func (UserAuthenticationRequested) Subscribe(
 	if requests == nil || authenticator == nil || decisions == nil {
 		return ErrNilAuthenticationDependency
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sub, err := requests.Subscribe(ctx)
 	if err != nil {
 		return err
@@ -94,6 +97,9 @@ func (MFAVerificationRequested) Subscribe(
 ) error {
 	if requests == nil || verifier == nil || decisions == nil {
 		return ErrNilAuthenticationDependency
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	sub, err := requests.Subscribe(ctx)
 	if err != nil {
