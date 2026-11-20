@@ -4,32 +4,18 @@ package authstream
 
 import (
 	"context"
-	"errors"
+	"time"
 
 	stream "github.com/gunesis-game/pulsyflux-stream"
 )
 
-// Common authentication event names. Applications may publish additional
-// namespaced event names when integrating their own authentication flows.
-const (
-	UserRegistered         = "auth.user.registered"
-	UserAuthenticated      = "auth.user.authenticated"
-	AuthenticationFailed   = "auth.authentication.failed"
-	UserLoggedOut          = "auth.user.logged_out"
-	TokenIssued            = "auth.token.issued"
-	TokenRefreshed         = "auth.token.refreshed"
-	TokenRevoked           = "auth.token.revoked"
-	PasswordResetRequested = "auth.password_reset.requested"
-	PasswordResetCompleted = "auth.password_reset.completed"
-	MFAChallengeIssued     = "auth.mfa.challenge_issued"
-	MFAChallengePassed     = "auth.mfa.challenge_passed"
-	MFAChallengeFailed     = "auth.mfa.challenge_failed"
-)
+// AuthEvent is implemented by the authentication event types in this package.
+// Its unexported method keeps the set of event types controlled by this package.
+type AuthEvent interface {
+	authEvent()
+}
 
-// ErrInvalidEvent is returned when an event has no name.
-var ErrInvalidEvent = errors.New("authstream: event name must not be empty")
-
-// Payload contains non-secret metadata about an authentication event.
+// Payload contains non-secret metadata shared by authentication events.
 //
 // Do not put passwords, access tokens, refresh tokens, one-time codes, private
 // keys, or other credentials in these fields. Reason should be a short,
@@ -42,44 +28,98 @@ type Payload struct {
 	Reason    string
 }
 
-// Event is the event envelope used by the underlying pulsyflux stream.
-// Name should be one of the constants above or an application-specific,
-// namespaced event name. Time is populated by Publish when it is zero.
-type Event = stream.Event[Payload]
+// Each authentication event has its own Go type. Embed Payload to carry the
+// common event metadata without string-based event names.
+type UserRegistered struct{ Payload }
+type UserAuthenticated struct{ Payload }
+type AuthenticationFailed struct{ Payload }
+type UserLoggedOut struct{ Payload }
+type TokenIssued struct{ Payload }
+type TokenRefreshed struct{ Payload }
+type TokenRevoked struct{ Payload }
+type PasswordResetRequested struct{ Payload }
+type PasswordResetCompleted struct{ Payload }
+type MFAChallengeIssued struct{ Payload }
+type MFAChallengePassed struct{ Payload }
+type MFAChallengeFailed struct{ Payload }
 
-// Subscription receives authentication events.
-type Subscription = stream.Subscription[Payload]
+func (UserRegistered) authEvent()         {}
+func (UserAuthenticated) authEvent()      {}
+func (AuthenticationFailed) authEvent()   {}
+func (UserLoggedOut) authEvent()          {}
+func (TokenIssued) authEvent()            {}
+func (TokenRefreshed) authEvent()         {}
+func (TokenRevoked) authEvent()           {}
+func (PasswordResetRequested) authEvent() {}
+func (PasswordResetCompleted) authEvent() {}
+func (MFAChallengeIssued) authEvent()     {}
+func (MFAChallengePassed) authEvent()     {}
+func (MFAChallengeFailed) authEvent()     {}
 
-// Stream distributes authentication events to active subscribers.
-type Stream struct {
-	events *stream.Stream[Payload]
+// Event is the timestamped envelope delivered by a subscription.
+type Event[T AuthEvent] struct {
+	Data T
+	Time time.Time
+}
+
+// Subscription receives typed authentication events.
+type Subscription[T AuthEvent] struct {
+	sub *stream.Subscription[T]
+}
+
+// Events returns the read-only channel of typed authentication events.
+func (s *Subscription[T]) Events() <-chan Event[T] {
+	if s == nil || s.sub == nil {
+		return nil
+	}
+	out := make(chan Event[T])
+	go func() {
+		defer close(out)
+		for event := range s.sub.Events() {
+			out <- Event[T]{Data: event.Data, Time: event.Time}
+		}
+	}()
+	return out
+}
+
+// Close unregisters the subscription. It is safe to call more than once.
+func (s *Subscription[T]) Close() {
+	if s != nil && s.sub != nil {
+		s.sub.Close()
+	}
+}
+
+// Stream distributes typed authentication events to active subscribers.
+type Stream[T AuthEvent] struct {
+	events *stream.Stream[T]
 }
 
 // New creates an authentication event stream with bufferSize slots per
-// subscriber. bufferSize must be greater than zero; otherwise New panics in
-// the same way as pulsyflux-stream.New.
-func New(bufferSize int) *Stream {
-	return &Stream{events: stream.New[Payload](bufferSize)}
+// subscriber. Choose AuthEvent to publish all built-in event types, or a
+// concrete event type to restrict the stream to that event type.
+func New[T AuthEvent](bufferSize int) *Stream[T] {
+	return &Stream[T]{events: stream.New[T](bufferSize)}
 }
 
 // Subscribe registers a subscriber. Its channel closes when ctx is cancelled,
 // the subscription is closed, or the stream is closed. A nil context is treated
 // as context.Background().
-func (s *Stream) Subscribe(ctx context.Context) (*Subscription, error) {
-	return s.events.Subscribe(ctx)
+func (s *Stream[T]) Subscribe(ctx context.Context) (*Subscription[T], error) {
+	sub, err := s.events.Subscribe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Subscription[T]{sub: sub}, nil
 }
 
-// Publish sends an authentication event to every active subscriber. An empty
-// event name is rejected. Delivery, buffering, timestamps, and slow-subscriber
-// behavior are provided by pulsyflux-stream.
-func (s *Stream) Publish(event Event) error {
-	if event.Name == "" {
-		return ErrInvalidEvent
-	}
-	return s.events.Publish(event)
+// Publish sends a typed authentication event to every active subscriber.
+// Delivery, buffering, timestamps, and slow-subscriber behavior are provided
+// by pulsyflux-stream.
+func (s *Stream[T]) Publish(event T) error {
+	return s.events.Publish(stream.Event[T]{Data: event})
 }
 
 // Close closes the stream and all active subscriber channels. It is idempotent.
-func (s *Stream) Close() {
+func (s *Stream[T]) Close() {
 	s.events.Close()
 }
