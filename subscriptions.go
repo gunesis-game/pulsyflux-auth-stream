@@ -45,7 +45,7 @@ func SubscribeBearerToken(
 		ctx = context.Background()
 	}
 	parsed, err := url.ParseRequestURI(introspectionURL)
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return errInvalidIntrospectionURL
 	}
 
