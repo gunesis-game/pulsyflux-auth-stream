@@ -4,5 +4,5 @@ go 1.27.0
 
 require (
 	github.com/gunesis-game/pulsyflux-stream v0.0.0-20261121075543-221452a7fead
-	github.com/gunesis-game/pulsyflux-vault-stream v0.0.2
+	github.com/gunesis-game/pulsyflux-vault-stream v0.0.0-20261121080511-7eebe3c0da44
 )
