@@ -1,46 +1,37 @@
 # pulsyflux-auth-stream
 
-Auth-owned bearer-token validation events and a typed integration with
-[pulsyflux-vault-stream](https://github.com/gunesis-game/pulsyflux-vault-stream)
-over [pulsyflux-stream](https://github.com/gunesis-game/pulsyflux-stream).
+Validate bearer tokens in a typed, event-driven Go workflow. This package connects your upstream token-receiving component to [pulsyflux-vault-stream](https://github.com/gunesis-game/pulsyflux-vault-stream), using [pulsyflux-stream](https://github.com/gunesis-game/pulsyflux-stream) as the shared event transport.
 
-Auth makes the validation decision. Upstream components only report whether a
-bearer token was received; they do not validate it. Auth compares the presented
-token with the token returned by Vault.
+**Auth makes the decision.** Upstream only reports whether a bearer token was received. Auth asks Vault for the stored token and compares it with the presented value.
 
-## Event contract
+## How it works
 
-Auth defines the upstream input event types. Upstream packages import this
-module and publish these events on the workflow's shared `EventChannel`:
+1. An upstream component publishes either a token-received event or a no-token event.
+2. Auth looks up the presented token in Vault (the token is the lookup key).
+3. Auth publishes a valid or invalid result.
 
-- `BearerTokenReceiveEvent{Token: "..."}`
-- `BearerTokenNotReceiveEvent{}`
+| Auth outcome | Meaning |
+| --- | --- |
+| `ValidBearerTokenEvent` | Vault returned a token matching the presented token. |
+| `InvalidBearerTokenEvent` | No token was received, no Vault entry was found, or the token did not match. |
 
-Auth publishes two credential-free outcomes:
+Outcome events contain no credentials.
 
-- `ValidBearerTokenEvent{}` — the Vault-returned token matched.
-- `InvalidBearerTokenEvent{}` — no bearer token, no Vault entry, or mismatch.
+## Install
 
-Auth uses the presented bearer token itself as Vault's `Key` and publishes
-`VaultTokenRequestedEvent`. It subscribes to
-`VaultTokenFoundEvent` and `VaultTokenNotFoundEvent`. The Vault event
-definitions and streams remain owned by the Vault package.
+```sh
+go get github.com/gunesis-game/pulsyflux-auth-stream
+```
 
-No `RequestID` is used. A shared `EventChannel` is the workflow boundary:
-components in one workflow use the same channel, while separate workflows use
-different channels. The Vault response `Key` identifies which pending token
-lookup it belongs to within that workflow.
+## Integration
 
-## Setup
-
-Register the upstream input streams and initialize Vault on the same channel
-before constructing Auth. Retrieve Auth's output streams with stream.Get[T](channel) and subscribe
-before publishing any bearer input events.
+Create one shared EventChannel per workflow. Register the upstream input streams and initialize Vault on that channel before creating Auth. Subscribe to Auth outcomes before publishing token input events.
 
 ```go
 channel := stream.NewEventChannel()
 defer channel.Close()
 
+// Register the Auth input streams on this channel first.
 bearerReceived, err := stream.New[authstream.BearerTokenReceiveEvent](channel, 32)
 if err != nil {
     return err
@@ -49,9 +40,8 @@ bearerNotReceived, err := stream.New[authstream.BearerTokenNotReceiveEvent](chan
 if err != nil {
     return err
 }
-_ = bearerReceived
-_ = bearerNotReceived
 
+// Vault must use this same channel and be initialized before Auth.
 vault, err := vaultstream.New(ctx, channel)
 if err != nil {
     return err
@@ -64,27 +54,24 @@ if err != nil {
 }
 defer auth.Close()
 
-validEvents := stream.Get[authstream.ValidBearerTokenEvent](channel)
-if validEvents == nil {
-    return errors.New("Auth valid-token stream was not registered")
+// Subscribe to Auth outcomes before publishing input events.
+validStream := stream.Get[authstream.ValidBearerTokenEvent](channel)
+invalidStream := stream.Get[authstream.InvalidBearerTokenEvent](channel)
+if validStream == nil || invalidStream == nil {
+    return errors.New("Auth output streams not registered")
 }
-valid, err := validEvents.Subscribe(ctx)
+valid, err := validStream.Subscribe(ctx)
 if err != nil {
     return err
 }
 defer valid.Close()
-
-invalidEvents := stream.Get[authstream.InvalidBearerTokenEvent](channel)
-if invalidEvents == nil {
-    return errors.New("Auth invalid-token stream was not registered")
-}
-invalid, err := invalidEvents.Subscribe(ctx)
+invalid, err := invalidStream.Subscribe(ctx)
 if err != nil {
     return err
 }
 defer invalid.Close()
 
-// Upstream publishes a token on the same channel:
+// Publish a received token using the current Event API.
 event, err := stream.NewEvent[authstream.BearerTokenReceiveEvent](stream.NewRedactionPolicy())
 if err != nil {
     return err
@@ -92,22 +79,34 @@ if err != nil {
 if err := event.SetData(authstream.BearerTokenReceiveEvent{Token: presentedToken}); err != nil {
     return err
 }
-err = bearerReceived.Publish(event)
+if err := bearerReceived.Publish(event); err != nil {
+    return err
+}
+
+// Read valid.Events() and invalid.Events() in your consumer logic.
+_ = bearerNotReceived
+_ = valid
+_ = invalid
 ```
 
-The example omits application-specific error handling and token storage setup.
-Vault must already contain the token under the same key for a successful
-comparison. Use the Auth output event streams to consume the decision.
-Auth.Close stops only Auth's own subscriptions and workers. It does not close
-the shared channel or upstream/Vault streams; the application owns channel
-shutdown.
+This example illustrates wiring; add your application's consumer loops, error handling, and token storage initialization. Vault must contain the presented token under the same key for the comparison to succeed.
 
-## Security and limitations
+## API and behavior
 
-- Bearer tokens are necessarily present in the upstream input and Vault lookup
-  request/response events. Do not log event payloads or expose them in traces.
-- Auth outcome events contain no credentials.
-- The in-memory Vault is not persistent storage or a production secrets
-  manager; see the Vault package documentation for its limitations.
-- This is an in-process event transport. Sharing an EventChannel UUID does not
-  provide cross-process messaging.
+- **Inputs:** `BearerTokenReceiveEvent{Token: ...}`, `BearerTokenNotReceiveEvent{}`
+- **Outputs:** `ValidBearerTokenEvent{}`, `InvalidBearerTokenEvent{}`
+- **Errors:** `auth.Errors()` provides best-effort asynchronous publish errors.
+- **Shutdown:** `auth.Close()` stops Auth's subscriptions and workers. It does not close the shared channel or other components' streams. The application owns channel shutdown.
+
+Each workflow must use its own EventChannel. Sharing a channel is an in-process workflow boundary, not cross-process transport.
+
+## Security notes
+
+- Do not log bearer tokens or token-bearing event payloads.
+- Auth's outcome events intentionally contain no credentials.
+- The in-memory Vault is not persistent storage or a production secrets manager; consult the Vault project's documentation for storage limitations.
+
+## Related packages
+
+- [pulsyflux-stream](https://github.com/gunesis-game/pulsyflux-stream) — event transport and typed streams.
+- [pulsyflux-vault-stream](https://github.com/gunesis-game/pulsyflux-vault-stream) — token lookup and storage workflow.
