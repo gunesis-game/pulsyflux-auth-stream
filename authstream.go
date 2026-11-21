@@ -185,7 +185,7 @@ func (a *Auth) handleBearerTokens(
 			if !ok {
 				return
 			}
-			presentedToken := event.Data.Token
+			presentedToken := event.Data().Token
 			if strings.TrimSpace(presentedToken) == "" {
 				a.publishInvalid()
 				continue
@@ -193,10 +193,7 @@ func (a *Auth) handleBearerTokens(
 
 			a.addPending(presentedToken, presentedToken)
 
-			err := requests.Publish(stream.Event[vaultstream.VaultTokenRequestedEvent]{
-				Name: "vault.token.requested",
-				Data: vaultstream.VaultTokenRequestedEvent{Key: presentedToken},
-			})
+			err := publishEvent(requests, "vault.token.requested", vaultstream.VaultTokenRequestedEvent{Key: presentedToken})
 			if err != nil {
 				a.consumePending(presentedToken)
 				a.publishInvalid()
@@ -241,11 +238,11 @@ func (a *Auth) handleFoundTokens(
 			if !ok {
 				return
 			}
-			presentedToken, ok := a.consumePending(event.Data.Key)
+			presentedToken, ok := a.consumePending(event.Data().Key)
 			if !ok {
 				continue
 			}
-			if event.Data.Token == presentedToken {
+			if event.Data().Token == presentedToken {
 				a.publishValid()
 			} else {
 				a.publishInvalid()
@@ -269,7 +266,7 @@ func (a *Auth) handleNotFoundTokens(
 			if !ok {
 				return
 			}
-			if _, ok := a.consumePending(event.Data.Key); ok {
+			if _, ok := a.consumePending(event.Data().Key); ok {
 				a.publishInvalid()
 			}
 		}
@@ -306,19 +303,13 @@ func (a *Auth) consumePending(key string) (string, bool) {
 }
 
 func (a *Auth) publishValid() {
-	if err := a.validBearerTokenEvents.Publish(stream.Event[ValidBearerTokenEvent]{
-		Name: "auth.bearer.valid",
-		Data: ValidBearerTokenEvent{},
-	}); err != nil {
+	if err := publishEvent(a.validBearerTokenEvents, "auth.bearer.valid", ValidBearerTokenEvent{}); err != nil {
 		a.report(fmt.Errorf("authstream: publish valid-token outcome: %w", err))
 	}
 }
 
 func (a *Auth) publishInvalid() {
-	if err := a.invalidBearerTokenEvents.Publish(stream.Event[InvalidBearerTokenEvent]{
-		Name: "auth.bearer.invalid",
-		Data: InvalidBearerTokenEvent{},
-	}); err != nil {
+	if err := publishEvent(a.invalidBearerTokenEvents, "auth.bearer.invalid", InvalidBearerTokenEvent{}); err != nil {
 		a.report(fmt.Errorf("authstream: publish invalid-token outcome: %w", err))
 	}
 }
@@ -329,4 +320,12 @@ func (a *Auth) report(err error) {
 	default:
 		// Error reporting must never block an event-consumer goroutine.
 	}
+}
+
+// publishEvent constructs an Event with the setter-based pulsyflux-stream API.
+func publishEvent[T any](target *stream.Stream[T], name string, data T) error {
+	event, err := stream.NewEvent[T](stream.NewRedactionPolicy())
+	if err != nil { return err }
+	if err := event.SetData(data); err != nil { return err }
+	return target.Publish(event)
 }
