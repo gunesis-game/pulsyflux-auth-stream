@@ -85,10 +85,14 @@ if err != nil {
 defer invalid.Close()
 
 // Upstream publishes a token on the same channel:
-err = bearerReceived.Publish(stream.Event[authstream.BearerTokenReceiveEvent]{
-    Name: "upstream.bearer.received",
-    Data: authstream.BearerTokenReceiveEvent{Token: presentedToken},
-})
+event, err := stream.NewEvent[authstream.BearerTokenReceiveEvent](stream.NewRedactionPolicy())
+if err != nil {
+    return err
+}
+if err := event.SetData(authstream.BearerTokenReceiveEvent{Token: presentedToken}); err != nil {
+    return err
+}
+err = bearerReceived.Publish(event)
 ```
 
 The example omits application-specific error handling and token storage setup.
