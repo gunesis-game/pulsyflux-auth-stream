@@ -13,6 +13,14 @@ import (
 
 const testTimeout = 2 * time.Second
 
+func makeEvent[T any](t *testing.T, data T) stream.Event[T] {
+	t.Helper()
+	event, err := stream.NewEvent[T](stream.NewRedactionPolicy())
+	if err != nil { t.Fatal(err) }
+	if err := event.SetData(data); err != nil { t.Fatal(err) }
+	return event
+}
+
 type testSystem struct {
 	channel       *stream.EventChannel
 	bearer        *stream.Stream[BearerTokenReceiveEvent]
@@ -83,17 +91,14 @@ func newTestSystem(t *testing.T) *testSystem {
 
 func (s *testSystem) store(t *testing.T, key, token string) {
 	t.Helper()
-	err := s.vault.VaultTokenStoreRequestedEvents.Publish(stream.Event[vaultstream.VaultTokenStoreRequestedEvent]{
-		Name: "vault.token.store.requested",
-		Data: vaultstream.VaultTokenStoreRequestedEvent{Key: key, Token: token},
-	})
+	err := s.vault.VaultTokenStoreRequestedEvents.Publish(makeEvent(t, vaultstream.VaultTokenStoreRequestedEvent{Key: key, Token: token}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case event := <-s.storedSub.Events():
-		if event.Data.Key != key {
-			t.Fatalf("stored key = %q, want %q", event.Data.Key, key)
+		if event.Data().Key != key {
+			t.Fatalf("stored key = %q, want %q", event.Data().Key, key)
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("timed out waiting for Vault store confirmation")
@@ -137,10 +142,7 @@ func TestAuthValidatesPresentedTokenAgainstVault(t *testing.T) {
 	t.Run("matching token", func(t *testing.T) {
 		s := newTestSystem(t)
 		s.store(t, "presented-token", "presented-token")
-		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-			Name: "upstream.bearer.received",
-			Data: BearerTokenReceiveEvent{Token: "presented-token"},
-		}); err != nil {
+		if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "presented-token"})); err != nil {
 			t.Fatal(err)
 		}
 		receiveValid(t, s.validSub)
@@ -149,10 +151,7 @@ func TestAuthValidatesPresentedTokenAgainstVault(t *testing.T) {
 	t.Run("mismatching token", func(t *testing.T) {
 		s := newTestSystem(t)
 		s.store(t, "presented-token", "different-stored-token")
-		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-			Name: "upstream.bearer.received",
-			Data: BearerTokenReceiveEvent{Token: "presented-token"},
-		}); err != nil {
+		if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "presented-token"})); err != nil {
 			t.Fatal(err)
 		}
 		receiveInvalid(t, s.invalidSub)
@@ -160,10 +159,7 @@ func TestAuthValidatesPresentedTokenAgainstVault(t *testing.T) {
 
 	t.Run("not found", func(t *testing.T) {
 		s := newTestSystem(t)
-		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-			Name: "upstream.bearer.received",
-			Data: BearerTokenReceiveEvent{Token: "missing-token"},
-		}); err != nil {
+		if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "missing-token"})); err != nil {
 			t.Fatal(err)
 		}
 		receiveInvalid(t, s.invalidSub)
@@ -171,10 +167,7 @@ func TestAuthValidatesPresentedTokenAgainstVault(t *testing.T) {
 
 	t.Run("no bearer token", func(t *testing.T) {
 		s := newTestSystem(t)
-		if err := s.noBearer.Publish(stream.Event[BearerTokenNotReceiveEvent]{
-			Name: "upstream.bearer.not_received",
-			Data: BearerTokenNotReceiveEvent{},
-		}); err != nil {
+		if err := s.noBearer.Publish(makeEvent(t, BearerTokenNotReceiveEvent{})); err != nil {
 			t.Fatal(err)
 		}
 		receiveInvalid(t, s.invalidSub)
@@ -188,10 +181,7 @@ func TestAuthHandlesConcurrentLookups(t *testing.T) {
 		s.store(t, token, token)
 	}
 	for _, token := range tokens {
-		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-			Name: "upstream.bearer.received",
-			Data: BearerTokenReceiveEvent{Token: token},
-		}); err != nil {
+		if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: token})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -204,15 +194,12 @@ func TestAuthDoesNotLeakTokenInOutcomeEvents(t *testing.T) {
 	s := newTestSystem(t)
 	secret := "sensitive-bearer-value"
 	s.store(t, secret, "not-the-same-value")
-	if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-		Name: "upstream.bearer.received",
-		Data: BearerTokenReceiveEvent{Token: secret},
-	}); err != nil {
+	if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: secret})); err != nil {
 		t.Fatal(err)
 	}
 	event := waitInvalidEvent(t, s.invalidSub)
-	if event.Data != (InvalidBearerTokenEvent{}) {
-		t.Fatalf("invalid outcome unexpectedly contains data: %#v", event.Data)
+	if event.Data() != (InvalidBearerTokenEvent{}) {
+		t.Fatalf("invalid outcome unexpectedly contains data: %#v", event.Data())
 	}
 }
 
@@ -233,10 +220,7 @@ func TestEventChannelsIsolateWorkflows(t *testing.T) {
 	first.store(t, "first-token", "first-token")
 	second.store(t, "second-token", "second-token")
 
-	if err := first.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-		Name: "upstream.bearer.received",
-		Data: BearerTokenReceiveEvent{Token: "first-token"},
-	}); err != nil {
+	if err := first.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "first-token"})); err != nil {
 		t.Fatal(err)
 	}
 	receiveValid(t, first.validSub)
@@ -278,16 +262,10 @@ func TestAuthStopsOnContextCancellation(t *testing.T) {
 
 	// Closing Auth must leave the externally owned streams and shared channel
 	// open; upstream can still publish after Auth has stopped.
-	if err := bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-		Name: "upstream.bearer.received",
-		Data: BearerTokenReceiveEvent{Token: "after-close"},
-	}); err != nil {
+	if err := bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "after-close"})); err != nil {
 		t.Fatalf("Auth.Close closed upstream stream: %v", err)
 	}
-	if err := noBearer.Publish(stream.Event[BearerTokenNotReceiveEvent]{
-		Name: "upstream.bearer.not_received",
-		Data: BearerTokenNotReceiveEvent{},
-	}); err != nil {
+	if err := noBearer.Publish(makeEvent(t, BearerTokenNotReceiveEvent{})); err != nil {
 		t.Fatalf("Auth.Close closed no-bearer stream: %v", err)
 	}
 }
@@ -324,10 +302,7 @@ func TestAuthRejectsEmptyAndWhitespaceTokens(t *testing.T) {
 	for _, token := range []string{"", " ", "\t\n"} {
 		t.Run(fmt.Sprintf("%q", token), func(t *testing.T) {
 			s := newTestSystem(t)
-			if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-				Name: "upstream.bearer.received",
-				Data: BearerTokenReceiveEvent{Token: token},
-			}); err != nil {
+			if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: token})); err != nil {
 				t.Fatal(err)
 			}
 			receiveInvalid(t, s.invalidSub)
@@ -342,10 +317,7 @@ func TestAuthHandlesRepeatedIdenticalTokensConcurrently(t *testing.T) {
 	s.store(t, "repeated-token", "repeated-token")
 
 	for i := 0; i < count; i++ {
-		if err := s.bearer.Publish(stream.Event[BearerTokenReceiveEvent]{
-			Name: "upstream.bearer.received",
-			Data: BearerTokenReceiveEvent{Token: "repeated-token"},
-		}); err != nil {
+		if err := s.bearer.Publish(makeEvent(t, BearerTokenReceiveEvent{Token: "repeated-token"})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -359,10 +331,7 @@ func TestAuthPublishesOneInvalidOutcomePerNoBearerEvent(t *testing.T) {
 	s := newTestSystem(t)
 	const count = 5
 	for i := 0; i < count; i++ {
-		if err := s.noBearer.Publish(stream.Event[BearerTokenNotReceiveEvent]{
-			Name: "upstream.bearer.not_received",
-			Data: BearerTokenNotReceiveEvent{},
-		}); err != nil {
+		if err := s.noBearer.Publish(makeEvent(t, BearerTokenNotReceiveEvent{})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -374,16 +343,10 @@ func TestAuthPublishesOneInvalidOutcomePerNoBearerEvent(t *testing.T) {
 
 func TestAuthIgnoresVaultResponsesWithoutPendingLookup(t *testing.T) {
 	s := newTestSystem(t)
-	if err := s.vault.VaultTokenFoundEvents.Publish(stream.Event[vaultstream.VaultTokenFoundEvent]{
-		Name: "vault.token.found",
-		Data: vaultstream.VaultTokenFoundEvent{Key: "unsolicited", Token: "unsolicited"},
-	}); err != nil {
+	if err := s.vault.VaultTokenFoundEvents.Publish(makeEvent(t, vaultstream.VaultTokenFoundEvent{Key: "unsolicited", Token: "unsolicited"})); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.vault.VaultTokenNotFoundEvents.Publish(stream.Event[vaultstream.VaultTokenNotFoundEvent]{
-		Name: "vault.token.not_found",
-		Data: vaultstream.VaultTokenNotFoundEvent{Key: "also-unsolicited"},
-	}); err != nil {
+	if err := s.vault.VaultTokenNotFoundEvents.Publish(makeEvent(t, vaultstream.VaultTokenNotFoundEvent{Key: "also-unsolicited"})); err != nil {
 		t.Fatal(err)
 	}
 	assertNoValidEvent(t, s.validSub)
