@@ -1,82 +1,60 @@
-# Steering — pulsyflux-auth-stream
+# AI Agent Steering — pulsyflux-auth-stream
 
-This file records the current contract and implementation decisions. Read it
-before changing the package. Work directly on `main`; do not create a branch.
+Use this file as the project guidance for AI coding agents and automated contributors. Read it before planning or changing code. Keep changes focused, work directly on `main`, and preserve the design contract below unless the maintainer explicitly asks to change it.
 
-## Responsibility
+## Purpose and ownership
 
-Auth owns bearer-token validation. Upstream components report whether a token
-was received and publish Auth-defined input events. Upstream does not validate
-the token. Auth requests the stored token from Vault and compares it with the
-presented token.
+Auth validates bearer tokens against the token held by `pulsyflux-vault-stream`.
 
-## Event ownership
+- Upstream components report whether they received a bearer token; they do not validate it.
+- Auth owns its input event definitions and credential-free validation outcomes.
+- Vault owns the Vault lookup/request/response event types.
+- Auth compares the presented token with the token returned by Vault.
 
-Auth defines and exposes these input events for upstream publishers:
+## Event contract
+
+Upstream publishes Auth-defined input events:
 
 - `BearerTokenReceiveEvent{Token string}`
 - `BearerTokenNotReceiveEvent{}`
 
-Auth publishes only these credential-free outcomes. Consumers retrieve their
-streams from the shared EventChannel with stream.Get[T](channel), rather than
-accessing stream fields on Auth:
+Auth publishes only credential-free outcomes:
 
 - `ValidBearerTokenEvent{}`
 - `InvalidBearerTokenEvent{}`
 
-Vault owns and registers:
+Auth requests Vault using `VaultTokenRequestedEvent` and consumes `VaultTokenFoundEvent` / `VaultTokenNotFoundEvent`. These event types remain owned by the Vault package.
 
-- `VaultTokenRequestedEvent` — Auth publishes it.
-- `VaultTokenFoundEvent` — Auth subscribes.
-- `VaultTokenNotFoundEvent` — Auth subscribes.
+Use the shared `*stream.EventChannel` as the workflow boundary. Separate workflows must use separate channels. Do not introduce per-request IDs: the presented token is the Vault lookup key and pending lookup state handles concurrent/repeated requests for the same key. Keep one Auth validation consumer per workflow channel.
 
-Auth does not own, register, or close upstream or Vault streams. It registers
-only its valid/invalid output streams.
+## Lifecycle and boundaries
 
-## Workflow and lookup contract
+- Upstream input streams and Vault must be registered/initialized on the shared channel before `authstream.New`.
+- Auth subscribes to Vault responses before upstream inputs.
+- Consumers retrieve Auth output streams with `stream.Get[T](channel)` and subscribe before publishing inputs.
+- Auth owns only its subscriptions, workers, and output-stream registration. `Auth.Close()` must not close the shared channel or upstream/Vault streams.
+- The application closes the EventChannel after its workflow components stop.
 
-- Components participating in one workflow share one `*stream.EventChannel`.
-- Separate workflows use separate EventChannels; this is the isolation boundary.
-- No per-request `RequestID` is part of this contract.
-- The presented bearer token itself is the Vault lookup `Key`.
-- A found response is accepted only when Auth has a pending lookup for its
-  `Key`; Auth compares the returned `Token` with that key.
-- A not-found response for a pending key produces an invalid outcome.
-- A no-bearer input produces an invalid outcome without a Vault lookup.
-- Credentials are never copied into Auth outcome events or logged.
+## Security and implementation rules
 
-The pending lookup count supports repeated concurrent presentations of the same
-token. Vault response events are broadcast to subscribers on their typed
-stream, so the channel is a workflow scope, not a per-message correlation ID.
-Keep one Auth validation consumer per workflow channel.
+- Never log, trace, or expose bearer tokens or event payloads containing credentials.
+- Auth outcome events must remain credential-free.
+- Do not add unrelated event types (lifecycle, MFA, password reset), callbacks, reflection dispatch, or string-routed events.
+- Keep typed events named with the `Event` suffix.
+- Worker publish errors are reported through `Auth.Errors()`.
+- Keep dependencies aligned with the current `pulsyflux-vault-stream` and `pulsyflux-stream` APIs; avoid stale tagged versions when upstream API changes require newer revisions.
+- Maintain idiomatic Go, focused changes, and clear tests. Update README and this steering file when public API, setup, ownership, or architectural guidance changes.
 
-## Construction and shutdown
+## Verification
 
-1. Upstream registers the two Auth input event streams on the channel.
-2. Vault is initialized on that same channel and registers its streams.
-3. Auth.New retrieves those streams, registers its output streams, subscribes
-   to Vault responses first, then subscribes to upstream inputs.
-4. Upstream retrieves Auth output streams with stream.Get[EventType](channel)
-   and subscribes before publishing input events.
-5. Auth.Close cancels and joins only Auth-owned subscriptions/workers. It does
-   not close the EventChannel or any upstream/Vault/output streams.
-6. The application closes the shared EventChannel after all workflow
-   components have stopped.
+Before declaring work complete, run or verify CI for:
 
-## Implementation notes
+```sh
+gofmt -w .
+go mod tidy
+go test -race ./...
+go vet ./...
+go build ./...
+```
 
-- Typed event payloads use the `Event` suffix.
-- Do not add generic lifecycle events, password-reset/MFA events, callbacks,
-  reflection dispatch, or string-based event routing.
-- Keep Vault events outside any closed Auth-only event union.
-- Publish errors from worker goroutines are exposed through Auth.Errors().
-- The dependency versions in go.mod must be compatible with the Vault module's
-  pinned pulsyflux-stream version.
-- Do not claim tests or builds passed unless a real run or CI result confirms it.
-
-## Verification checklist
-
-Run `gofmt`, `go mod tidy`, `go test -race ./...`, `go vet ./...`, and
-`go build ./...`. Tests should cover matching and mismatching tokens,
-not-found and no-bearer paths, concurrent lookups, channel isolation, and
-cancellation/shutdown.
+Tests should cover valid/mismatching tokens, Vault not-found, no-token input, repeated/concurrent lookups, channel isolation, and shutdown/cancellation. Do not claim checks passed unless a real run confirms it.
